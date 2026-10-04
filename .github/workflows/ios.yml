@@ -11,14 +11,14 @@ on:
       bundle_id:
         description: "iOS Bundle Identifier (match P12 certificate)"
         required: false
-        default: "app.ursaminor7619.otter1161"
+        default: "com.example.piliplus"
         type: string
   workflow_dispatch:
     inputs:
       bundle_id:
         description: "iOS Bundle Identifier (match P12 certificate)"
         required: false
-        default: "app.ursaminor7619.otter1161"
+        default: "com.example.piliplus"
         type: string
 
 jobs:
@@ -47,7 +47,7 @@ jobs:
 
       - name: Build iOS
         run: |
-          BUNDLE_ID="${{ inputs.bundle_id || 'app.ursaminor7619.otter1161' }}"
+          BUNDLE_ID="${{ inputs.bundle_id || 'com.example.piliplus' }}"
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" ./build/ios/iphoneos/Runner.app/Info.plist
           ln -sf ./build/ios/iphoneos Payload

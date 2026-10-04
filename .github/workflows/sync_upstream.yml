@@ -11,7 +11,7 @@ on:
       bundle_id:
         description: "iOS Bundle Identifier (match P12 certificate)"
         required: false
-        default: "app.ursaminor7619.otter1161"
+        default: "com.example.piliplus"
         type: string
   schedule:
     # Daily check at 04:00 UTC (12:00 CST)
@@ -71,4 +71,4 @@ jobs:
     if: ${{ needs.sync.outputs.should_build == 'true' }}
     uses: ./.github/workflows/ios.yml
     with:
-      bundle_id: ${{ inputs.bundle_id || 'app.ursaminor7619.otter1161' }}
+      bundle_id: ${{ inputs.bundle_id || 'com.example.piliplus' }}

@@ -10,71 +10,47 @@
 // PiliPlus iOS 27 Compatibility & Rotation Fix
 // 1. Fixes Dynamic Island / Control Center / Lock Screen Now Playing tap-to-jump
 //    and foreground Dynamic Island popup (#3108) when signed with P12 certificates
-//    (e.g. QuanNengQian / ESign / Feather) by synchronizing MediaRemote MRClient
-//    and NSBundle mainBundle identifier with the provisioning profile's
-//    application-identifier entitlement.
+//    (e.g. QuanNengQian) where the certificate's provisioning profile
+//    application-identifier differs from Info.plist's CFBundleIdentifier
+//    (allowing PiliPlus and YouTube to use different CFBundleIdentifiers and coexist).
+//    In iOS 27, mediaremoted derives the initial XPC client bundleIdentifier from
+//    SecTaskCopyValueForEntitlement("application-identifier") via MSVBundleIDForAuditToken.
+//    By calling MRMediaRemoteSetParentApplication(origin, appBundleID) and
+//    MRMediaRemoteSetClientProperties(client, origin, queue, completion) with
+//    Info.plist's CFBundleIdentifier (com.example.piliplus), SpringBoard and
+//    mediaremoted associate the Now Playing session with PiliPlus's own Bundle ID.
 // 2. Fixes iOS 27 portrait <-> landscape video rotation horizontal stretching
 //    (#2780) by enforcing aspect-preserving contentsGravity (kCAGravityResizeAspect)
 //    on FlutterView's CAMetalLayer and smoothing UIWindowScene rotation transitions.
 // ============================================================================
 
-static NSString *gSignedBundleID = nil;
-static NSString *gSignedDisplayName = nil;
+static NSString *gAppBundleID = nil;
+static NSString *gAppDisplayName = nil;
 
-// Extract the actual signed application-identifier from embedded.mobileprovision
-// or LSApplicationProxy so it works with ANY P12 certificate automatically.
-static NSString *detectSignedBundleIdentifier(void) {
-    // 1. Try reading embedded.mobileprovision
-    NSString *provisionPath = [[NSBundle mainBundle] pathForResource:@"embedded" ofType:@"mobileprovision"];
-    if (provisionPath) {
-        NSData *data = [NSData dataWithContentsOfFile:provisionPath];
-        if (data.length > 0) {
-            NSString *raw = [[NSString alloc] initWithBytes:data.bytes length:data.length encoding:NSISOLatin1StringEncoding];
-            if (raw) {
-                NSRange keyRange = [raw rangeOfString:@"<key>application-identifier</key>"];
-                if (keyRange.location != NSNotFound) {
-                    NSString *sub = [raw substringFromIndex:NSMaxRange(keyRange)];
-                    NSRange sStart = [sub rangeOfString:@"<string>"];
-                    NSRange sEnd = [sub rangeOfString:@"</string>"];
-                    if (sStart.location != NSNotFound && sEnd.location != NSNotFound && sEnd.location > sStart.location) {
-                        NSString *appId = [sub substringWithRange:NSMakeRange(NSMaxRange(sStart), sEnd.location - NSMaxRange(sStart))];
-                        NSRange dot = [appId rangeOfString:@"."];
-                        if (dot.location != NSNotFound) {
-                            NSString *bundleId = [appId substringFromIndex:dot.location + 1];
-                            if (bundleId.length > 0 && ![bundleId containsString:@"*"]) {
-                                return bundleId;
-                            }
-                        }
-                    }
-                }
-            }
+// Read the actual CFBundleIdentifier from Info.plist on disk so LaunchServices /
+// SpringBoard and MediaRemote use the exact installed Bundle ID of PiliPlus.
+static NSString *detectInstalledBundleIdentifier(void) {
+    NSString *plistPath = [[NSBundle mainBundle] pathForResource:@"Info" ofType:@"plist"];
+    if (plistPath) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+        NSString *bid = dict[@"CFBundleIdentifier"];
+        if ([bid isKindOfClass:[NSString class]] && bid.length > 0) {
+            return bid;
         }
     }
-
-    // 2. Try LSApplicationProxy
-    @try {
-        Class proxyCls = NSClassFromString(@"LSApplicationProxy");
-        SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
-        if (proxyCls && [proxyCls respondsToSelector:sel]) {
-            id (*msgSend)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
-            id proxy = msgSend(proxyCls, sel, nil);
-            SEL appIdSel = NSSelectorFromString(@"applicationIdentifier");
-            if (proxy && [proxy respondsToSelector:appIdSel]) {
-                id (*msgSend0)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-                NSString *appId = msgSend0(proxy, appIdSel);
-                if ([appId isKindOfClass:[NSString class]] && appId.length > 0) {
-                    return appId;
-                }
-            }
+    CFBundleRef mainBundle = CFBundleGetMainBundle();
+    if (mainBundle) {
+        CFStringRef cfBid = CFBundleGetIdentifier(mainBundle);
+        if (cfBid && CFStringGetLength(cfBid) > 0) {
+            return (__bridge NSString *)cfBid;
         }
-    } @catch (__unused NSException *e) {}
-
-    return [[NSBundle mainBundle] objectForInfoDictionaryKey:(__bridge NSString *)kCFBundleIdentifierKey];
+    }
+    return @"com.example.piliplus";
 }
 
-// Synchronize MediaRemote MRClient properties with the real signed Bundle ID
+// Synchronize MediaRemote MRClient & ParentApplication with PiliPlus's Info.plist CFBundleIdentifier
 static void syncMediaRemoteNowPlayingClient(void) {
-    if (!gSignedBundleID.length) return;
+    if (!gAppBundleID.length) return;
     static void *mrHandle = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -83,50 +59,85 @@ static void syncMediaRemoteNowPlayingClient(void) {
     if (!mrHandle) return;
 
     @try {
+        // Verified exact signatures from MediaRemote.framework disassembly:
+        // void *MRMediaRemoteGetLocalOrigin(void);
+        // void MRMediaRemoteSetParentApplication(void *origin, CFStringRef parentAppBundleID);
+        // void MRMediaRemoteSetClientProperties(void *client, void *origin, dispatch_queue_t queue, void (^completion)(CFErrorRef));
         typedef void *(*MRGetLocalOriginFn)(void);
-        typedef void (*MRSetClientPropsFn)(void *origin, void *client, dispatch_queue_t queue, void (^completion)(CFErrorRef));
-        typedef void (*MRSetParentAppFn)(void *client, CFStringRef parentBundleID);
+        typedef void (*MRSetParentAppFn)(void *origin, CFStringRef parentBundleID);
+        typedef void (*MRSetClientPropsFn)(void *client, void *origin, dispatch_queue_t queue, void (^completion)(CFErrorRef));
 
         MRGetLocalOriginFn getLocalOrigin = (MRGetLocalOriginFn)dlsym(mrHandle, "MRMediaRemoteGetLocalOrigin");
-        MRSetClientPropsFn setClientProps = (MRSetClientPropsFn)dlsym(mrHandle, "MRMediaRemoteSetClientProperties");
         MRSetParentAppFn setParentApp = (MRSetParentAppFn)dlsym(mrHandle, "MRMediaRemoteSetParentApplication");
+        MRSetClientPropsFn setClientProps = (MRSetClientPropsFn)dlsym(mrHandle, "MRMediaRemoteSetClientProperties");
 
+        if (!getLocalOrigin) return;
+        void *origin = getLocalOrigin();
+        if (!origin) return;
+
+        // 1. Set ParentApplication on LocalOrigin to PiliPlus's CFBundleIdentifier (com.example.piliplus).
+        //    This updates MRDNowPlayingClient.parentApplicationBundleIdentifier in mediaremoted,
+        //    which SpringBoard uses both to suppress foreground Dynamic Island (#3108) and to
+        //    launch PiliPlus when tapping Dynamic Island / Control Center / Lock Screen controls.
+        if (setParentApp) {
+            setParentApp(origin, (__bridge CFStringRef)gAppBundleID);
+        }
+
+        // 2. Also update MRClient properties (bundleIdentifier, parentApplicationBundleIdentifier, displayName)
         Class mrClientCls = NSClassFromString(@"MRClient");
-        if (mrClientCls && getLocalOrigin && setClientProps) {
-            void *origin = getLocalOrigin();
-            id client = [[mrClientCls alloc] init];
+        if (mrClientCls && setClientProps) {
+            id client = nil;
+            SEL localClientSel = NSSelectorFromString(@"localClient");
+            if ([mrClientCls respondsToSelector:localClientSel]) {
+                id (*msgSend0)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+                id sharedLocal = msgSend0(mrClientCls, localClientSel);
+                if ([sharedLocal respondsToSelector:@selector(copy)]) {
+                    client = [sharedLocal copy];
+                }
+            }
+            if (!client) {
+                client = [[mrClientCls alloc] init];
+            }
             if (client) {
-                @try { [client setValue:gSignedBundleID forKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) {}
-                if (gSignedDisplayName.length) {
-                    @try { [client setValue:gSignedDisplayName forKey:@"displayName"]; } @catch (__unused NSException *e) {}
+                @try { [client setValue:gAppBundleID forKey:@"bundleIdentifier"]; } @catch (__unused NSException *e) {}
+                @try { [client setValue:gAppBundleID forKey:@"parentApplicationBundleIdentifier"]; } @catch (__unused NSException *e) {}
+                if (gAppDisplayName.length) {
+                    @try { [client setValue:gAppDisplayName forKey:@"displayName"]; } @catch (__unused NSException *e) {}
                 }
-                if (setParentApp) {
-                    setParentApp((__bridge void *)client, (__bridge CFStringRef)gSignedBundleID);
-                }
-                setClientProps(origin, (__bridge void *)client, dispatch_get_main_queue(), nil);
+                setClientProps((__bridge void *)client, origin, dispatch_get_main_queue(), nil);
             }
         }
     } @catch (__unused NSException *e) {}
 }
 
 // ============================================================================
-// Part 1: NSBundle & MPNowPlayingInfoCenter Hooks
+// Part 1: MPNowPlayingInfoCenter & MRClient Hooks
 // ============================================================================
-
-static NSString *(*orig_NSBundle_bundleIdentifier)(NSBundle *self, SEL _cmd) = NULL;
-static NSString *swizzled_NSBundle_bundleIdentifier(NSBundle *self, SEL _cmd) {
-    if (self == [NSBundle mainBundle] && gSignedBundleID.length > 0) {
-        return gSignedBundleID;
-    }
-    return orig_NSBundle_bundleIdentifier(self, _cmd);
-}
 
 static void (*orig_setNowPlayingInfo)(id self, SEL _cmd, NSDictionary *info) = NULL;
 static void swizzled_setNowPlayingInfo(id self, SEL _cmd, NSDictionary *info) {
+    if (info != nil) {
+        syncMediaRemoteNowPlayingClient();
+    }
     orig_setNowPlayingInfo(self, _cmd, info);
     if (info != nil) {
         syncMediaRemoteNowPlayingClient();
     }
+}
+
+static NSString *(*orig_MRClient_parentAppBundleID)(id self, SEL _cmd) = NULL;
+static NSString *swizzled_MRClient_parentAppBundleID(id self, SEL _cmd) {
+    NSString *orig = orig_MRClient_parentAppBundleID ? orig_MRClient_parentAppBundleID(self, _cmd) : nil;
+    if (orig.length > 0) return orig;
+    return gAppBundleID;
+}
+
+static NSString *(*orig_MRClient_bundleID)(id self, SEL _cmd) = NULL;
+static NSString *swizzled_MRClient_bundleID(id self, SEL _cmd) {
+    if (gAppBundleID.length > 0) {
+        return gAppBundleID;
+    }
+    return orig_MRClient_bundleID ? orig_MRClient_bundleID(self, _cmd) : nil;
 }
 
 // ============================================================================
@@ -214,16 +225,26 @@ static void swizzled_FVC_viewWillTransition(UIViewController *self, SEL _cmd, CG
 __attribute__((constructor))
 static void PiliPlusIOS27FixInit(void) {
     @autoreleasepool {
-        gSignedBundleID = [detectSignedBundleIdentifier() copy];
-        gSignedDisplayName = [[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"]
-                              ?: [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"]
-                              ?: @"PiliPlus" copy];
+        gAppBundleID = [detectInstalledBundleIdentifier() copy];
+        gAppDisplayName = [[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"]
+                           ?: [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"]
+                           ?: @"PiliPlus" copy];
 
-        // 1. Hook NSBundle.bundleIdentifier to ensure runtime consistency with signed entitlement
-        Method bundleIdMethod = class_getInstanceMethod([NSBundle class], @selector(bundleIdentifier));
-        if (bundleIdMethod) {
-            orig_NSBundle_bundleIdentifier = (NSString *(*)(NSBundle *, SEL))method_getImplementation(bundleIdMethod);
-            method_setImplementation(bundleIdMethod, (IMP)swizzled_NSBundle_bundleIdentifier);
+        // 1. Hook MediaRemote MRClient to ensure parentApplicationBundleIdentifier & bundleIdentifier
+        //    always match PiliPlus's Info.plist CFBundleIdentifier (com.example.piliplus)
+        dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY);
+        Class mrClientCls = NSClassFromString(@"MRClient");
+        if (mrClientCls) {
+            Method parentMethod = class_getInstanceMethod(mrClientCls, NSSelectorFromString(@"parentApplicationBundleIdentifier"));
+            if (parentMethod) {
+                orig_MRClient_parentAppBundleID = (NSString *(*)(id, SEL))method_getImplementation(parentMethod);
+                method_setImplementation(parentMethod, (IMP)swizzled_MRClient_parentAppBundleID);
+            }
+            Method bidMethod = class_getInstanceMethod(mrClientCls, NSSelectorFromString(@"bundleIdentifier"));
+            if (bidMethod) {
+                orig_MRClient_bundleID = (NSString *(*)(id, SEL))method_getImplementation(bidMethod);
+                method_setImplementation(bidMethod, (IMP)swizzled_MRClient_bundleID);
+            }
         }
 
         // 2. Hook MPNowPlayingInfoCenter.setNowPlayingInfo: to sync MediaRemote MRClient
