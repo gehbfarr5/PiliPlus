@@ -1,0 +1,74 @@
+name: Sync Upstream & Build iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ios:
+        description: "Trigger iOS IPA build after syncing"
+        required: false
+        default: true
+        type: boolean
+      bundle_id:
+        description: "iOS Bundle Identifier (match P12 certificate)"
+        required: false
+        default: "app.ursaminor7619.otter1161"
+        type: string
+  schedule:
+    # Daily check at 04:00 UTC (12:00 CST)
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    name: Sync with Upstream (bggRGjQaUbCoE/PiliPlus)
+    runs-on: ubuntu-latest
+    outputs:
+      has_updates: ${{ steps.merge.outputs.has_updates }}
+      should_build: ${{ steps.merge.outputs.should_build }}
+    steps:
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge Upstream main
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/bggRGjQaUbCoE/PiliPlus.git || true
+          git fetch upstream main
+
+          LOCAL_HEAD=$(git rev-parse HEAD)
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+
+          if git merge-base --is-ancestor "$UPSTREAM_HEAD" "$LOCAL_HEAD"; then
+            echo "Already up-to-date with upstream/main."
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_ios }}" == "true" ]]; then
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Merging new commits from upstream/main..."
+            git merge upstream/main -m "chore: sync upstream bggRGjQaUbCoE/PiliPlus main" || {
+              echo "Resolving merge conflicts by favoring our iOS 27 fix changes (-X ours)..."
+              git merge --abort || true
+              git merge -X ours upstream/main -m "chore: sync upstream bggRGjQaUbCoE/PiliPlus main (keep iOS 27 fixes)"
+            }
+            git push origin main
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build-ios:
+    needs: sync
+    if: ${{ needs.sync.outputs.should_build == 'true' }}
+    uses: ./.github/workflows/ios.yml
+    with:
+      bundle_id: ${{ inputs.bundle_id || 'app.ursaminor7619.otter1161' }}

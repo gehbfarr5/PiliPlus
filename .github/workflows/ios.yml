@@ -8,7 +8,18 @@ on:
         required: false
         default: ""
         type: string
+      bundle_id:
+        description: "iOS Bundle Identifier (match P12 certificate)"
+        required: false
+        default: "app.ursaminor7619.otter1161"
+        type: string
   workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "iOS Bundle Identifier (match P12 certificate)"
+        required: false
+        default: "app.ursaminor7619.otter1161"
+        type: string
 
 jobs:
   build-macos-app:
@@ -36,7 +47,9 @@ jobs:
 
       - name: Build iOS
         run: |
+          BUNDLE_ID="${{ inputs.bundle_id || 'app.ursaminor7619.otter1161' }}"
           flutter build ios --release --no-codesign --dart-define-from-file=pili_release.json --no-pub
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" ./build/ios/iphoneos/Runner.app/Info.plist
           ln -sf ./build/ios/iphoneos Payload
           # make AltSign happy...
           find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - --preserve-metadata=identifier,entitlements {} \;
