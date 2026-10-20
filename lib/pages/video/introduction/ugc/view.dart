@@ -187,25 +187,29 @@ class _UgcIntroPanelState extends State<UgcIntroPanel> {
                               .plPlayerController
                               .horizontalSeasonPanel)) ...[
                     if (videoDetail.hasSeason)
-                      Obx(
-                        () => SeasonPanel(
-                          key: ValueKey(introController.videoDetail.value),
-                          heroTag: widget.heroTag,
-                          showEpisodes: widget.showEpisodes,
-                          ugcIntroController: introController,
+                      NoTranslucentArea(
+                        child: Obx(
+                          () => SeasonPanel(
+                            key: ValueKey(introController.videoDetail.value),
+                            heroTag: widget.heroTag,
+                            showEpisodes: widget.showEpisodes,
+                            ugcIntroController: introController,
+                          ),
+                        ),
+                      ),
+                    if (videoDetail.hasParts)
+                      NoTranslucentArea(
+                        child: Obx(
+                          () => PagesPanel(
+                            key: ValueKey(introController.videoDetail.value),
+                            heroTag: widget.heroTag,
+                            ugcIntroController: introController,
+                            bvid: introController.bvid,
+                            showEpisodes: widget.showEpisodes,
+                          ),
                         ),
                       ),
                   ],
-                  if (videoDetail.hasParts)
-                    Obx(
-                      () => PagesPanel(
-                        key: ValueKey(introController.videoDetail.value),
-                        heroTag: widget.heroTag,
-                        ugcIntroController: introController,
-                        bvid: introController.bvid,
-                        showEpisodes: widget.showEpisodes,
-                      ),
-                    ),
                 ],
               ),
             ),
