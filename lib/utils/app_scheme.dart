@@ -127,7 +127,7 @@ abstract final class PiliScheme {
               bool isEp = path.contains('/ep/');
               PageUtils.viewPgc(
                 seasonId: isEp ? null : id,
-                epId: isEp ? id : null,
+                epId: isEp ? .parse(id) : null,
                 progress: _videoProgress(uri.queryParameters),
               );
               return true;
@@ -852,8 +852,9 @@ abstract final class PiliScheme {
         }
         launchURL();
         return false;
-      case 'bubble':
+      case 'bubble' || 'tribee':
         // https://www.bilibili.com/bubble/home/1
+        // https://www.bilibili.com/tribee/home/1
         final id = uriDigitRegExp.firstMatch(path)?.group(1);
         if (id != null) {
           Get.toNamed('/bubble', arguments: {'id': id});
